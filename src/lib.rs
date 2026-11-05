@@ -9,30 +9,53 @@ pub enum Command {
     TakeScreenshot,
 }
 
-pub fn resolve(input: &str) -> Option<Command> {
-    let normalized = input
+// Related aliases and their result are now kept together as data.
+struct CommandSpec {
+    command: Command,
+    aliases: &'static [&'static str],
+}
+
+const COMMANDS: &[CommandSpec] = &[
+    CommandSpec {
+        command: Command::OpenBrowser,
+        aliases: &["открой браузер", "запусти браузер"],
+    },
+    CommandSpec {
+        command: Command::OpenTaskManager,
+        aliases: &["открой диспетчер задач", "запусти диспетчер задач"],
+    },
+    CommandSpec {
+        command: Command::LockWorkstation,
+        aliases: &["заблокируй компьютер", "заблокируй станцию"],
+    },
+    CommandSpec {
+        command: Command::TakeScreenshot,
+        aliases: &["сделай скриншот", "создай скриншот"],
+    },
+];
+
+fn normalize(input: &str) -> String {
+    input
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase();
+        .to_lowercase()
+}
 
-    if normalized == "открой браузер" || normalized == "запусти браузер" {
-        Some(Command::OpenBrowser)
-    } else if normalized == "открой диспетчер задач"
-        || normalized == "запусти диспетчер задач"
-    {
-        Some(Command::OpenTaskManager)
-    } else if normalized == "заблокируй компьютер"
-        || normalized == "заблокируй станцию"
-    {
-        Some(Command::LockWorkstation)
-    } else if normalized == "сделай скриншот"
-        || normalized == "создай скриншот"
-    {
-        Some(Command::TakeScreenshot)
-    } else {
-        None
+struct CommandResolver;
+
+impl CommandResolver {
+    fn resolve(&self, input: &str) -> Option<Command> {
+        let normalized = normalize(input);
+        COMMANDS
+            .iter()
+            .find(|spec| spec.aliases.contains(&normalized.as_str()))
+            .map(|spec| spec.command)
     }
+}
+
+pub fn resolve(input: &str) -> Option<Command> {
+    CommandResolver.resolve(input)
 }
 
 #[cfg(test)]
