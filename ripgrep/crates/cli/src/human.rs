@@ -16,25 +16,20 @@ enum ParseSizeErrorKind {
 }
 
 impl ParseSizeError {
+    fn new(original: &str, kind: ParseSizeErrorKind) -> ParseSizeError {
+        ParseSizeError { original: original.to_string(), kind }
+    }
+
     fn format(original: &str) -> ParseSizeError {
-        ParseSizeError {
-            original: original.to_string(),
-            kind: ParseSizeErrorKind::InvalidFormat,
-        }
+        ParseSizeError::new(original, ParseSizeErrorKind::InvalidFormat)
     }
 
     fn int(original: &str, err: std::num::ParseIntError) -> ParseSizeError {
-        ParseSizeError {
-            original: original.to_string(),
-            kind: ParseSizeErrorKind::InvalidInt(err),
-        }
+        ParseSizeError::new(original, ParseSizeErrorKind::InvalidInt(err))
     }
 
     fn overflow(original: &str) -> ParseSizeError {
-        ParseSizeError {
-            original: original.to_string(),
-            kind: ParseSizeErrorKind::Overflow,
-        }
+        ParseSizeError::new(original, ParseSizeErrorKind::Overflow)
     }
 }
 
@@ -68,6 +63,76 @@ impl From<ParseSizeError> for std::io::Error {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SizeUnit {
+    Bytes,
+    Kibi,
+    Mebi,
+    Gibi,
+}
+
+impl SizeUnit {
+    fn parse(
+        suffix: &str,
+        original: &str,
+    ) -> Result<SizeUnit, ParseSizeError> {
+        match suffix {
+            "" => Ok(SizeUnit::Bytes),
+            "K" => Ok(SizeUnit::Kibi),
+            "M" => Ok(SizeUnit::Mebi),
+            "G" => Ok(SizeUnit::Gibi),
+            _ => Err(ParseSizeError::format(original)),
+        }
+    }
+
+    fn multiplier(self) -> u64 {
+        const KIB: u64 = 1 << 10;
+        const MIB: u64 = 1 << 20;
+        const GIB: u64 = 1 << 30;
+        match self {
+            SizeUnit::Bytes => 1,
+            SizeUnit::Kibi => KIB,
+            SizeUnit::Mebi => MIB,
+            SizeUnit::Gibi => GIB,
+        }
+    }
+}
+
+struct SizeParser<'a> {
+    original: &'a str,
+    digits: &'a str,
+    suffix: &'a str,
+}
+
+impl<'a> SizeParser<'a> {
+    fn new(original: &'a str) -> SizeParser<'a> {
+        let digits_end = original
+            .as_bytes()
+            .iter()
+            .take_while(|&b| b.is_ascii_digit())
+            .count();
+        let (digits, suffix) = original.split_at(digits_end);
+        SizeParser { original, digits, suffix }
+    }
+
+    fn parse_number(&self) -> Result<u64, ParseSizeError> {
+        if self.digits.is_empty() {
+            return Err(ParseSizeError::format(self.original));
+        }
+        self.digits
+            .parse::<u64>()
+            .map_err(|err| ParseSizeError::int(self.original, err))
+    }
+
+    fn parse(&self) -> Result<u64, ParseSizeError> {
+        let value = self.parse_number()?;
+        let unit = SizeUnit::parse(self.suffix, self.original)?;
+        value
+            .checked_mul(unit.multiplier())
+            .ok_or_else(|| ParseSizeError::overflow(self.original))
+    }
+}
+
 /// Parse a human readable size like `2M` into a corresponding number of bytes.
 ///
 /// Supported size suffixes are `K` (for kilobyte), `M` (for megabyte) and `G`
@@ -77,26 +142,7 @@ impl From<ParseSizeError> for std::io::Error {
 ///
 /// Additional suffixes may be added over time.
 pub fn parse_human_readable_size(size: &str) -> Result<u64, ParseSizeError> {
-    let digits_end =
-        size.as_bytes().iter().take_while(|&b| b.is_ascii_digit()).count();
-    let digits = &size[..digits_end];
-    if digits.is_empty() {
-        return Err(ParseSizeError::format(size));
-    }
-    let value =
-        digits.parse::<u64>().map_err(|e| ParseSizeError::int(size, e))?;
-
-    let suffix = &size[digits_end..];
-    if suffix.is_empty() {
-        return Ok(value);
-    }
-    let bytes = match suffix {
-        "K" => value.checked_mul(1 << 10),
-        "M" => value.checked_mul(1 << 20),
-        "G" => value.checked_mul(1 << 30),
-        _ => return Err(ParseSizeError::format(size)),
-    };
-    bytes.ok_or_else(|| ParseSizeError::overflow(size))
+    SizeParser::new(size).parse()
 }
 
 #[cfg(test)]
@@ -145,5 +191,17 @@ mod tests {
     #[test]
     fn invalid_suffix() {
         assert!(parse_human_readable_size("123T").is_err());
+    }
+
+    #[test]
+    fn boundary_and_invalid_inputs() {
+        assert_eq!(
+            u64::MAX,
+            parse_human_readable_size(&u64::MAX.to_string()).unwrap()
+        );
+        assert!(parse_human_readable_size("18446744073709551616").is_err());
+        assert!(parse_human_readable_size("1k").is_err());
+        assert!(parse_human_readable_size("1.5K").is_err());
+        assert!(parse_human_readable_size("١K").is_err());
     }
 }

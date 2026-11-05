@@ -15,6 +15,25 @@ pub struct InvalidPatternError {
 }
 
 impl InvalidPatternError {
+    fn new(original: String, valid_up_to: usize) -> InvalidPatternError {
+        InvalidPatternError { original, valid_up_to }
+    }
+
+    fn from_os(pattern: &OsStr) -> InvalidPatternError {
+        let valid_up_to = pattern
+            .to_string_lossy()
+            .find('\u{FFFD}')
+            .expect("a Unicode replacement codepoint for invalid UTF-8");
+        InvalidPatternError::new(escape_os(pattern), valid_up_to)
+    }
+
+    fn from_bytes(
+        pattern: &[u8],
+        err: std::str::Utf8Error,
+    ) -> InvalidPatternError {
+        InvalidPatternError::new(escape(pattern), err.valid_up_to())
+    }
+
     /// Returns the index in the given string up to which valid UTF-8 was
     /// verified.
     pub fn valid_up_to(&self) -> usize {
@@ -49,13 +68,7 @@ impl From<InvalidPatternError> for io::Error {
 /// occurs is given. The error also suggests the use of hex escape sequences,
 /// which are supported by many regex engines.
 pub fn pattern_from_os(pattern: &OsStr) -> Result<&str, InvalidPatternError> {
-    pattern.to_str().ok_or_else(|| {
-        let valid_up_to = pattern
-            .to_string_lossy()
-            .find('\u{FFFD}')
-            .expect("a Unicode replacement codepoint for invalid UTF-8");
-        InvalidPatternError { original: escape_os(pattern), valid_up_to }
-    })
+    pattern.to_str().ok_or_else(|| InvalidPatternError::from_os(pattern))
 }
 
 /// Convert arbitrary bytes into a regular expression pattern.
@@ -67,10 +80,8 @@ pub fn pattern_from_os(pattern: &OsStr) -> Result<&str, InvalidPatternError> {
 pub fn pattern_from_bytes(
     pattern: &[u8],
 ) -> Result<&str, InvalidPatternError> {
-    std::str::from_utf8(pattern).map_err(|err| InvalidPatternError {
-        original: escape(pattern),
-        valid_up_to: err.valid_up_to(),
-    })
+    std::str::from_utf8(pattern)
+        .map_err(|err| InvalidPatternError::from_bytes(pattern, err))
 }
 
 /// Read patterns from a file path, one per line.
@@ -143,16 +154,14 @@ pub fn patterns_from_reader<R: io::Read>(rdr: R) -> io::Result<Vec<String>> {
     let mut line_number = 0;
     io::BufReader::new(rdr).for_byte_line(|line| {
         line_number += 1;
-        match pattern_from_bytes(line) {
-            Ok(pattern) => {
-                patterns.push(pattern.to_string());
-                Ok(true)
-            }
-            Err(err) => Err(io::Error::new(
+        let pattern = pattern_from_bytes(line).map_err(|err| {
+            io::Error::new(
                 io::ErrorKind::Other,
                 format!("{}: {}", line_number, err),
-            )),
-        }
+            )
+        })?;
+        patterns.push(pattern.to_string());
+        Ok(true)
     })?;
     Ok(patterns)
 }
@@ -166,6 +175,13 @@ mod tests {
         let pat = b"abc\xFFxyz";
         let err = pattern_from_bytes(pat).unwrap_err();
         assert_eq!(3, err.valid_up_to());
+    }
+
+    #[test]
+    fn reader_error_keeps_line_number() {
+        let err =
+            patterns_from_reader(b"ok\nabc\xFF\n".as_slice()).unwrap_err();
+        assert!(err.to_string().starts_with("2: found invalid UTF-8"));
     }
 
     #[test]
